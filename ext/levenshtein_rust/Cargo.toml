@@ -10,4 +10,8 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-magnus = { version = "0.6.2" }
+magnus = { version = "=0.5.2" }
+rb-sys = { version = "=0.9.115" }
+
+[build-dependencies]
+rb-sys-build = { version = "=0.9.115" }
