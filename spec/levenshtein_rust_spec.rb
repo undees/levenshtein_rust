@@ -5,7 +5,8 @@ RSpec.describe LevenshteinRust do
     expect(LevenshteinRust::VERSION).not_to be nil
   end
 
-  it "does something useful" do
-    expect(false).to eq(true)
+  it "is callable from Ruby" do
+    expect(LevenshteinRust.hello("Ruby"))
+      .to eq("Hello from Rust, Ruby!")
   end
 end
