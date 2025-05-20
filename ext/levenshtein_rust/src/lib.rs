@@ -1,15 +1,20 @@
 use rb_sys::{
     RB_TYPE,
+    RSTRING_LEN,
+    RSTRING_PTR,
     VALUE,
     rb_define_module,
     rb_define_module_function,
     rb_eArgError,
+    rb_eTypeError,
+    rb_enc_get,
+    rb_funcall,
+    rb_intern,
     rb_raise,
-    rb_string_value_ptr,
     rb_uint2inum,
-    ruby_value_type,
+    rb_utf8_encoding,
 };
-use std::ffi::CStr;
+use rb_sys::ruby_value_type::RUBY_T_STRING;
 use std::os::raw::c_char;
 
 /// Compute the Levenshtein edit distance between two UTF-8 strings.
@@ -50,41 +55,53 @@ fn distance(s1: &str, s2: &str) -> usize {
     *distances.last().unwrap()
 }
 
+unsafe fn is_valid_encoding(s: VALUE) -> bool {
+    let method_sym = rb_intern("valid_encoding?\0".as_ptr() as *const c_char);
+    rb_funcall(s, method_sym, 0) != 0
+}
+
 #[inline(always)]
-/// SAFETY: `v` must be a VALUE of Ruby type `T_STRING` containing valid UTF-8.
-unsafe fn value_to_cstr(v: VALUE) -> Result<&'static str, ()> {
-    let ptr = rb_string_value_ptr(&v as *const VALUE as *mut VALUE) as *const c_char;
-    CStr::from_ptr(ptr).to_str().map_err(|_| ())
+/// SAFETY: `v` must be a VALUE of Ruby type `RUBY_T_STRING` containing valid UTF-8.
+unsafe fn value_to_str(v: VALUE) -> Result<&'static str, ()> {
+    let ptr = RSTRING_PTR(v) as *const u8;
+    let len = RSTRING_LEN(v) as usize;
+    let bytes = std::slice::from_raw_parts(ptr, len);
+
+    if bytes.contains(&b'\0') {
+        return Err(());
+    }
+
+    std::str::from_utf8(bytes).map_err(|_| ())
+}
+
+unsafe fn ensure_valid_utf8<'a>(s: VALUE) -> &'a str {
+    if RB_TYPE(s) != RUBY_T_STRING {
+        rb_raise(rb_eTypeError, b"Expected a String\0".as_ptr() as *const c_char);
+    }
+
+    if rb_enc_get(s) != rb_utf8_encoding() {
+        rb_raise(rb_eArgError, b"Expected UTF-8 encoding\0".as_ptr() as *const c_char);
+    }
+
+    if !is_valid_encoding(s) {
+        rb_raise(rb_eArgError, b"Invalid UTF-8 in byte sequence\0".as_ptr() as *const c_char);
+    }
+
+    match value_to_str(s) {
+        Ok(s) => s,
+        Err(_) => rb_raise(rb_eArgError, b"String contains embedded NUL bytes\0".as_ptr() as *const c_char),
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn distance_ruby(_self: VALUE, s1: VALUE, s2: VALUE) -> VALUE {
-    unsafe {
-        const T_STRING: ruby_value_type = unsafe { std::mem::transmute(5i32) };
+pub unsafe extern "C" fn distance_ruby(_self: VALUE, s1: VALUE, s2: VALUE) -> VALUE {
+    let s1 = ensure_valid_utf8(s1);
+    let s2 = ensure_valid_utf8(s2);
 
-        if RB_TYPE(s1) != T_STRING {
-            rb_raise(rb_eArgError, b"Expected first argument to be a String\0".as_ptr() as *const c_char);
-        }
+    let result: usize = distance(s1, s2);
+    let ruby_result = rb_uint2inum(result as _);
 
-        if RB_TYPE(s2) != T_STRING {
-            rb_raise(rb_eArgError, b"Expected second argument to be a String\0".as_ptr() as *const c_char);
-        }
-
-        let s1 = match value_to_cstr(s1) {
-            Ok(s) => s,
-            Err(_) => rb_raise(rb_eArgError, b"Invalid UTF-8 in s1\0".as_ptr() as *const c_char),
-        };
-
-        let s2 = match value_to_cstr(s2) {
-            Ok(s) => s,
-            Err(_) => rb_raise(rb_eArgError, b"Invalid UTF-8 in s2\0".as_ptr() as *const c_char),
-        };
-
-        let result: usize = distance(s1, s2);
-        let ruby_result = rb_uint2inum(result as _);
-
-        ruby_result
-    }
+    ruby_result
 }
 
 #[no_mangle]
